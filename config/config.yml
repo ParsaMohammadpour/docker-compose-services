@@ -18,7 +18,7 @@ health:
     threshold: 3
 proxy:
   remoteurl: https://registry-1.docker.io
-  username: ParsaMohammadpourHamidFadaei
+  username: username
   password: 1qaz!QAZ
 auth:
   false
