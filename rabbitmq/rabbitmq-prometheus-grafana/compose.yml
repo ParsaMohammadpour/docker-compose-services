@@ -1,0 +1,59 @@
+version: "3"
+
+networks:
+  rabbitmq-prometheus:
+
+services:
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    ports:
+      - 5057:9090
+    networks:
+      - "rabbitmq-prometheus"
+    restart: unless-stopped
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prom_data:/prometheus
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - 5056:3000
+    restart: unless-stopped
+    networks:
+      - "rabbitmq-prometheus"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/dashboards-provisioning:/etc/grafana/provisioning/dashboards
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+  rmq0:
+    image: rmq0
+    container_name: "rabbitmq"
+    build:
+      context: .
+      dockerfile: ./rabbitmq/Dockerfile
+    #command: rabbitmqctl trace_on -p http://es01:9200
+    ports:
+      - 15671:15671
+      - 15672:15672
+      - 15692:15692
+      - 5672:5672
+    networks:
+      - "rabbitmq-prometheus"
+    hostname: rmq0
+    environment:
+      RABBITMQ_ERLANG_COOKIE: rabbitmq-prometheus
+      RABBITMQ_DEFAULT_PASS: pass
+      RABBITMQ_DEFAULT_USER: user
+    volumes:
+      - ./volumes/rabbitmq/data/:/var/lib/rabbitmq/
+      - ./volumes/rabbitmq/log/:/var/log/rabbitmq
+
+volumes:
+  prom_data:

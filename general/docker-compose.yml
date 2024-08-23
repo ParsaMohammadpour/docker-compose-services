@@ -1,0 +1,528 @@
+version: '3.9'
+
+volumes:
+  postgres_data:
+  pgadmin:
+  redis_data: 
+  redis-insight-data: 
+  postgres-data: 
+  rabbitmq-data: 
+  rabbitmq-log: 
+  eventstore-volume-data:
+  eventstore-volume-index:
+  eventstore-volume-logs:
+
+networks:
+  debezium-ui-network:
+  postgresql-network:
+  redis-network:
+  eventstrode-network:
+  registry-network:
+
+services:
+################################################ image registry ################################################
+  registry:
+    container_name: registry
+    restart: always
+    image: registry
+    ports:
+      - 5000:5000
+    volumes:
+      - ./registry-data:/var/lib/registry:rw
+    networks:
+      - registry-network
+
+################################################ image registry ui ################################################
+  registry-ui:
+    container_name: registry-ui
+    image: parabuzzle/craneoperator:latest
+    ports:
+      - 5050:80
+    environment:
+      - REGISTRY_HOST=${REGISTRY_HOST_UI}
+      - REGISTRY_PORT=${REGISTRY_PORT}
+      - REGISTRY_PROTOCOL=${REGISTRY_PROTOCOL}
+      - SSL_VERIFY=${REGISTRY_SSL_VERIFY}
+      - USERNAME=${REGISTRY_ADMIN}
+      - PASSWORD=${REGISTRY_PASSWORD}
+    restart: always
+    depends_on:
+      - registry
+    networks:
+      - registry-network
+
+################################################ postgresql ################################################
+  postgres:
+    container_name: postgres
+    image: postgres:latest
+    restart: always
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRESQL_DATABASE_NAME}
+      POSTGRES_USER: ${POSTGRESQL_DATABASE_USER}
+      POSTGRES_PASSWORD: ${POSTGRESQL_DATABASE_PASSWORD}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U user -d db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 4G
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+    networks:
+      - postgresql-network
+      - debezium-ui-network
+
+################################################ admin database ################################################
+  adminer:
+    container_name: adminer
+    image: adminer
+    restart: always
+    depends_on:
+      - postgres
+    ports:
+      - 5051:8080
+    networks:
+      - postgresql-network
+
+################################################ pg_admin ################################################
+  pgadmin:
+    container_name: pg_admin
+    image: dpage/pgadmin4
+    ports:
+      - 5052:80
+    environment:
+       PGADMIN_DEFAULT_EMAIL: ${POSTGRESQL_ADMIN_EMAIL}
+       PGADMIN_DEFAULT_PASSWORD: ${POSTGRESQL_ADMIN_PASSWORD}
+    networks:
+      - postgresql-network
+
+################################################ redis ################################################
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 1s
+      timeout: 3s
+      retries: 5
+    networks:
+      - redis-network
+
+################################################ redis insight ################################################
+  redis_insight:
+    image: redislabs/redisinsight:1.14.0
+    container_name: redis_insight
+    restart: always
+    depends_on:
+      - redis
+    ports:
+      - 5053:8001
+    volumes:
+      - redis-insight-data:/db
+    networks:
+      - redis-network
+
+################################################ eventstoredb ################################################
+  eventstoredb:
+    container_name: eventstoredb
+    image: eventstore/eventstore:latest
+    environment:
+      - EVENTSTORE_CLUSTER_SIZE=1
+      - EVENTSTORE_RUN_PROJECTIONS=All
+      - EVENTSTORE_START_STANDARD_PROJECTIONS=True
+      - EVENTSTORE_INSECURE=true # let eventstore run without ceritficate
+      #- EVENTSTORE_DB=/var/lib/eventstore-data
+      #- EVENTSTORE_INDEX=/var/lib/eventstore-index
+      #- EVENTSTORE_LOG=/var/log/eventstore
+    ports:
+      - 1113:1113
+      - 5058:2113
+    volumes:
+      - type: volume
+        source: eventstore-volume-data
+        target: /var/lib/eventstore-data
+      - type: volume
+        source: eventstore-volume-index
+        target: /var/lib/eventstore-index
+      - type: volume
+        source: eventstore-volume-logs
+        target: /var/log/eventstore
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:2113/stats || exit 1"]
+      interval: 5s
+      timeout: 2s
+    networks:
+      - eventstrode-network
+      - debezium-ui-network
+
+############################################################# zookeper ################################################
+#############  zookeeper:
+#############    container_name: zookeeper
+#############    image: quay.io/debezium/zookeeper:latest
+#############    ports:
+#############      - 2181:2181
+#############      - 2888:2888
+#############      - 3888:3888
+#############    healthcheck:
+#############      test: echo srvr | nc zookeeper 2181 || exit 1
+#############      start_period: 10s
+#############      retries: 20
+#############      interval: 10s
+#############    #volumes:
+#############    #  - ./zookeeper/zookeeper_data:/var/lib/zookeeper/data
+#############    #  - ./zookeeper/zookeeper_log:/var/lib/zookeeper/log
+#############    networks:
+#############      - debezium-ui-network
+#############
+############# ################################################ kafka ################################################  
+#############  kafka:
+#############    container_name: kafka
+#############    image: quay.io/debezium/kafka
+#############    restart: "no"
+#############    links:
+#############      - zookeeper
+#############    environment:
+#############      ZOOKEEPER_CONNECT: zookeeper:2181
+#############    depends_on:
+#############      - zookeeper
+#############    ports:
+#############      - 9092:9092
+#############    #volumes:
+#############    #  - ./kafka/kafka_data:/kafka/data
+#############    #  - ./kafka/kafka_logs:/kafka/logs
+#############    networks:
+#############      - debezium-ui-network
+#############
+############################################################# kafka-ui ################################################
+#############  kafka-ui:
+#############    container_name: kafka-ui
+#############    image: provectuslabs/kafka-ui:latest
+#############    ports:
+#############      - 5059:8080
+#############    depends_on:
+#############      - kafka
+#############    environment:
+#############      DYNAMIC_CONFIG_ENABLED: 'true'
+#############      KAFKA_CLUSTERS_0_NAME: kafka
+#############      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+#############    networks:
+#############      - debezium-ui-network
+#############
+############################################################# kafka ui ################################################
+#############  kafdrop:
+#############    container_name: kafdrop
+#############    image: obsidiandynamics/kafdrop
+#############    restart: "no"
+#############    environment:
+#############      KAFKA_BROKERCONNECT: kafka:9092
+#############    ports:
+#############      - 9000:9000
+#############    depends_on:
+#############      - kafka
+#############    networks:
+#############      - debezium-ui-network
+#############
+############################################################# debezium-connect ################################################
+#############  connect:
+#############    image: quay.io/debezium/connect:latest
+#############    container_name: connect
+#############    ports:
+#############      - 8083:8083
+#############    environment:
+#############      BOOTSTRAP_SERVERS: kafka:9092
+#############      GROUP_ID: 1
+#############      CONFIG_STORAGE_TOPIC: my_connect_configs
+#############      OFFSET_STORAGE_TOPIC: my_connect_offsets
+#############      STATUS_STORAGE_TOPIC: my_connect_statuses
+#############    links:
+#############      - kafka
+#############      - postgres
+#############      - eventstoredb
+#############    depends_on:
+#############      - kafka
+#############      - zookeeper
+#############      - postgres
+#############      - eventstoredb
+#############    networks:
+#############      - debezium-ui-network
+#############
+############################################################# debezium-ui ################################################
+#############  debezium-ui:
+#############    container_name: debezium-ui
+#############    image: debezium/debezium-ui:latest
+#############    ports:
+#############      - 8080:8080
+#############    environment:
+#############      KAFKA_CONNECT_URIS: http://connect:8083
+#############    links:
+#############      - connect
+#############    depends_on:
+#############      - connect
+#############    networks:
+#############      - debezium-ui-network
+
+########################################################### zookeeper ###########################################################
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - 2181:2181
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: echo srvr | nc zookeeper 2181 || exit 1
+      start_period: 10s
+      retries: 20
+      interval: 10s
+    networks:
+      - debezium-ui-network
+
+########################################################### broker ###########################################################
+  broker:
+    image: confluentinc/cp-kafka:latest
+    hostname: broker
+    container_name: broker
+    ports:
+      - 29092:29092
+      - 9092:9092
+      - 9101:9101
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+    healthcheck:
+      test: nc -z localhost 9092 || exit -1
+      start_period: 15s
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    networks:
+      - debezium-ui-network
+
+########################################################### schema-registry ###########################################################
+  schema-registry:
+    image: confluentinc/cp-schema-registry:latest
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - zookeeper
+      - broker
+    ports:
+      - 8081:8081
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: 'zookeeper:2181'
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+      SCHEMA_REGISTRY_ACCESS_CONTROL_ALLOW_ORIGIN: '*'
+      SCHEMA_REGISTRY_ACCESS_CONTROL_ALLOW_METHODS: 'GET,POST,PUT,OPTIONS'
+    networks:
+      - debezium-ui-network
+
+########################################################### (debezium)connect ###########################################################
+  connect:
+    image: confluentinc/cp-server-connect:latest
+    hostname: connect
+    container_name: connect
+    depends_on:
+      - zookeeper
+      - broker
+      - schema-registry
+    networks:
+      - debezium-ui-network
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: compose-connect-group
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      me: 'http://schema-registry:8081'
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+    volumes:
+      - ./plugins:/usr/share/confluent-hub-components
+    command:
+      - bash
+      - -c
+      - |
+        echo "Installing JDBC Sink Connector"
+        confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:latest
+        echo "Launching Kafka Connect worker"
+        /etc/confluent/docker/run & wait $!
+
+########################################################### control-center ###########################################################
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:latest
+    hostname: control-center
+    container_name: control-center
+    depends_on:
+      - schema-registry
+      - connect
+      - broker
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      CONFLIENT_METRICS_ENABLE: 'false'
+      PORT: 9021
+      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'http://connect:8083'
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONTROL_CENTER_CONNECT_HEALTHCHECK_ENDPOINT: '/connectors'
+    networks:
+      - debezium-ui-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9021/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+########################################################### debezium ###########################################################
+  debezium:
+    image: debezium/connect:latest
+    container_name: debezium
+    hostname: debezium
+    depends_on:
+      postgres:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    ports:
+      - '8093:8083'
+    environment:
+      BOOTSTRAP_SERVERS: broker:29092
+      CONNECT_REST_ADVERTISED_HOST_NAME: debezium
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      STATUS_STORAGE_TOPIC: connect_statuses
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      ENABLE_DEBEZIUM_SCRIPTING: 'true'
+    healthcheck:
+      test:
+        [ 'CMD', 'curl', '--silent', '--fail', '-X', 'GET', 'http://localhost:8083/connectors', ]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      debezium-ui-network:
+
+################################################ kafka-ui ################################################
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - 5059:8080
+    depends_on:
+      - broker
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      KAFKA_CLUSTERS_0_NAME: broker
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
+    networks:
+      - debezium-ui-network
+
+################################################ kafka ui ################################################
+  kafdrop:
+    container_name: kafdrop
+    image: obsidiandynamics/kafdrop
+    restart: "no"
+    environment:
+      KAFKA_BROKERCONNECT: broker:29092
+    ports:
+      - 9000:9000
+    depends_on:
+      - broker
+    networks:
+      - debezium-ui-network
+
+################################################ debezium ui ################################################
+  debezium-ui:
+    image: debezium/debezium-ui:latest
+    platform: linux/x86_64
+    container_name: debezium-ui
+    hostname: debezium-ui
+    depends_on:
+      debezium:
+        condition: service_healthy
+    ports:
+      - '8080:8080'
+    environment:
+      KAFKA_CONNECT_URIS: http://debezium:8083
+    networks:
+      debezium-ui-network:
+
+################################################ conncet ui ################################################
+  connect-ui:
+    image: landoop/kafka-connect-ui
+    container_name: connect-ui
+    depends_on:
+      - debezium
+    ports:
+      - 8001:8000
+    environment:
+      CONNECT_URL: http://debezium:8083
+    networks:
+      debezium-ui-network:
+
+################################################ schema registry ui ################################################
+  schema-registry-ui:
+    image: landoop/schema-registry-ui
+    hostname: schema-registry-ui
+    container_name: schema-registry-ui
+    depends_on:
+      - broker
+      - schema-registry
+    ports:
+      - 8002:8000
+    environment:
+      SCHEMAREGISTRY_URL: schema-registry:8081
+      ALLOW_GLOBAL: 1
+      ALLOW_TRANSITIVE: 1
+      ALLOW_DELETION: 1
+      READONLY_MODE: 1
+    networks:
+      debezium-ui-network:
